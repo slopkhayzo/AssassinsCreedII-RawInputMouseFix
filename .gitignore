@@ -1,0 +1,13 @@
+/build/
+/dist/
+/research/
+*.asi
+*.dll
+*.exe
+*.exp
+*.lib
+*.obj
+*.log
+*.pdb
+*.sha256
+/tools/
