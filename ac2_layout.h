@@ -17,7 +17,11 @@ namespace ac2 {
 
 constexpr std::uint32_t kImageBase = 0x00400000;
 constexpr std::uint32_t kTimeDateStamp = 0x5925BA62;
-constexpr std::uint32_t kSizeOfImage = 0x02170000;
+// The Ubisoft Connect image is 0x02170000 bytes. The Steam release is the same build wrapped
+// in Steam's DRM (SteamStub): an extra .bind section makes it 0x02190000, and .text is
+// encrypted on disk and decrypted at startup. Everything the fix uses lies below this size.
+constexpr std::uint32_t kMinSizeOfImage = 0x02170000;
+constexpr std::uint32_t kSteamSizeOfImage = 0x02190000;
 constexpr char kHostExecutable[] = "AssassinsCreedIIGame.exe";
 
 struct KnownBuild {
@@ -30,6 +34,8 @@ constexpr KnownBuild kKnownBuilds[] = {
      "Ubisoft Connect build (original)"},
     {"577FDAE3EBAA4295D8AD865762641AA94374BCABB01022A6DF1D4E6994A3E277",
      "Ubisoft Connect build + Unlocked FPS 1.0 (Kamzik123)"},
+    {"A4BA454B0E2A9190A42DB631574B694CC0DBDCEC750106C1B0364B70A6E4D17E",
+     "Steam build (Ubisoft Connect build wrapped in Steam DRM)"},
 };
 
 // Hook sites and code the fix depends on. Patterns are hex bytes; "??" matches any byte.

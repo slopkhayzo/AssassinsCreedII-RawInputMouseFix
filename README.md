@@ -4,16 +4,16 @@
 > This patch has been pretty much entirely been generated using AI; 
 > I won't and will never claim to have enough knowledge or expertise to do this 
 > kind of reverse-engineering by myself; I've tested a couple hours of gameplay and so far spotted no major issues (on my machine ofc, if you have issues feel free to open an Issue)
-> this patch currently probably only works for the latest Ubisoft Connect version of the game.
+> this patch currently probably only works for the latest Ubisoft Connect and Steam versions of the game.
 > If you're interested and want more (human generated) info, I have a blog post [here](https://slop-blog.enkhayzomachines.net/posts/assassin-s-creed-ii-raw-input-mouse-fix) :)
 
-An ASI plugin for the 32-bit Ubisoft Connect version of *Assassin's Creed II*
+An ASI plugin for the 32-bit Ubisoft Connect and Steam versions of *Assassin's Creed II*
 that removes the mouse acceleration from the third-person camera and makes its
 sensitivity independent of the frame rate: the same physical movement turns
 the camera by the same angle, however fast you move the mouse and whatever the
 frame rate is.
 
-Current release: **v1.0.0**
+Current release: **v1.0.1**
 
 The patch changes only the running process; it never modifies the game
 executable or game data on disk.
@@ -44,13 +44,20 @@ keys and the menu cursor are unchanged.
 | --- | --- |
 | Ubisoft Connect, original (PE timestamp `0x5925BA62`) | `7749D96CE04D7383352A36327EA3910A076704A8E0273206D938574658EE717B` |
 | Same, with Unlocked FPS 1.0 (Kamzik123) | `577FDAE3EBAA4295D8AD865762641AA94374BCABB01022A6DF1D4E6994A3E277` |
+| Steam (the same build wrapped in Steam's DRM) | `A4BA454B0E2A9190A42DB631574B694CC0DBDCEC750106C1B0364B70A6E4D17E` |
+
+The Steam executable is the Ubisoft Connect build with Steam's DRM wrapper
+(SteamStub): an extra `.bind` section, and `.text` encrypted on disk and
+decrypted when the game starts. Every other section is byte-identical. The
+plugin accepts the larger image and, if the code is still encrypted when it
+loads, checks again until it has been decrypted (up to 2 minutes).
 
 The hashes identify the tested builds; the plugin decides from the code itself.
 Before hooking it checks the image base and size, every code signature it
 depends on (`ac2_layout.h`), the DirectInput mouse GUID and data format, and the
 game's mouse and camera constants. Any mismatch fails closed: the game runs
 unmodified and the reason is written to `ac2-raw-mouse-fix.log`. Other releases
-(retail DVD, older Steam versions) have not been tested.
+(retail DVD, older patches) have not been tested.
 
 ## Install
 
@@ -60,7 +67,7 @@ unmodified and the reason is written to `ac2-raw-mouse-fix.log`. Other releases
    `AssassinsCreedIIGame.exe`. With an existing 32-bit ASI loader, use the
    plugin-only archive and copy only the ASI and the ini. Never overwrite an
    existing `dinput8.dll` without checking which mods use it.
-2. Start the game normally through Ubisoft Connect.
+2. Start the game normally (through Ubisoft Connect or Steam).
 3. If the fix does not seem active, check `ac2-raw-mouse-fix.log` beside the
    ASI (or in `%LOCALAPPDATA%\AC2RawMouseFix` if that folder is not writable).
 
@@ -119,7 +126,9 @@ build-msvc.cmd
 ```
 
 `layout-profile-test` maps each executable like the Windows loader, checks the
-layout and confirms that a corrupted signature byte is rejected.
+layout and confirms that a corrupted signature byte is rejected. It cannot check
+the Steam executable, whose code is encrypted on disk; that one is checked by the
+plugin in the running game.
 `build-msvc.cmd dev` adds the development tools (a hardware-breakpoint trace of
 the code that reads the camera stick, `[Trace]` in the ini).
 

@@ -3,8 +3,8 @@ Assassin's Creed II Raw Mouse Fix v@VERSION@
 
 Supported game builds
 ---------------------
-Assassin's Creed II, Ubisoft Connect (Uplay) build for Windows x86
-(AssassinsCreedIIGame.exe, PE timestamp 0x5925BA62). Two executables are
+Assassin's Creed II for Windows x86, Ubisoft Connect (Uplay) and Steam
+(AssassinsCreedIIGame.exe, PE timestamp 0x5925BA62). Three executables are
 tested, with SHA-256:
 
 Original:
@@ -13,11 +13,15 @@ Original:
 With the Unlocked FPS 1.0 patch by Kamzik123:
 577FDAE3EBAA4295D8AD865762641AA94374BCABB01022A6DF1D4E6994A3E277
 
+Steam (the same build wrapped in Steam's DRM, which decrypts the code when the
+game starts; the fix waits for that):
+A4BA454B0E2A9190A42DB631574B694CC0DBDCEC750106C1B0364B70A6E4D17E
+
 These hashes identify the reference builds; they are not a hard allowlist.
 Before writing a hook, the ASI checks the image layout and every code and data
 signature it depends on. Any mismatch leaves the game unchanged and is written
-to ac2-raw-mouse-fix.log. Other releases (retail DVD, older Steam versions)
-have not been tested; if their code differs, the fix stays inactive and the log
+to ac2-raw-mouse-fix.log. Other releases (retail DVD, older patches) have not
+been tested; if their code differs, the fix stays inactive and the log
 says why.
 
 Choose an installation
@@ -38,7 +42,8 @@ Convenience archive with Ultimate ASI Loader:
   AssassinsCreedIIRawMouseFix.asi and ac2-raw-mouse-fix.ini.
 
 For either installation, close the game before copying files, then start it
-normally through Ubisoft Connect.
+normally through Ubisoft Connect or Steam. The Steam version's game folder is
+steamapps\common\Assassin's Creed 2.
 
 What it fixes
 -------------

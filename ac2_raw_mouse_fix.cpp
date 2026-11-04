@@ -29,7 +29,7 @@
 #include "ac2_layout.h"
 
 #ifndef AC2_RAW_MOUSE_VERSION
-#define AC2_RAW_MOUSE_VERSION "1.0.0"
+#define AC2_RAW_MOUSE_VERSION "1.0.1"
 #endif
 
 // Development tools (right-stick reader trace): build-msvc.cmd dev defines AC2_DEV_TOOLS=1.
@@ -44,6 +44,8 @@ constexpr char kConfigFilename[] = "ac2-raw-mouse-fix.ini";
 constexpr char kFallbackDirectory[] = "AC2RawMouseFix";
 constexpr LONGLONG kLogRotateBytes = 4 * 1024 * 1024;
 constexpr DWORD kReportIntervalMs = 5000;
+constexpr DWORD kCodeReadyTimeoutMs = 120000;
+constexpr DWORD kCodeReadyPollMs = 50;
 // Counts that waited longer than this were collected while the camera was not running
 // (menus, cutscenes, other camera modes) and are dropped instead of replayed.
 constexpr DWORD kStaleCountsMs = 250;
@@ -129,12 +131,27 @@ LARGE_INTEGER g_qpcFrequency{};
 // ---------------------------------------------------------------------------------------
 // Files and logging
 
-bool BuildSiblingPath(const char* filename, char (&path)[MAX_PATH]) {
-    const DWORD length = GetModuleFileNameA(g_self, path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return false;
+// GetModuleFileName takes the loader lock, which the game's DRM start-up can hold for a long
+// time. Both paths are therefore read once in DllMain (which already holds that lock), and
+// nothing on the way to the hooks needs the lock again.
+char g_pluginDirectory[MAX_PATH]{};  // with a trailing backslash; empty if unknown
+char g_hostPath[MAX_PATH]{};
+
+void CaptureModulePaths(HMODULE self) {
+    char path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameA(self, path, MAX_PATH);
     char* slash = std::strrchr(path, '\\');
-    if (slash == nullptr) return false;
-    slash[1] = '\0';
+    if (length != 0 && length < MAX_PATH && slash != nullptr) {
+        slash[1] = '\0';
+        strcpy_s(g_pluginDirectory, path);
+    }
+    const DWORD hostLength = GetModuleFileNameA(nullptr, g_hostPath, MAX_PATH);
+    if (hostLength == 0 || hostLength >= MAX_PATH) g_hostPath[0] = '\0';
+}
+
+bool BuildSiblingPath(const char* filename, char (&path)[MAX_PATH]) {
+    if (g_pluginDirectory[0] == '\0') return false;
+    strcpy_s(path, g_pluginDirectory);
     return strcat_s(path, filename) == 0;
 }
 
@@ -246,11 +263,9 @@ void LoadConfig() {
 // Executable identification and layout validation
 
 bool HostIsGame() {
-    char path[MAX_PATH]{};
-    const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return false;
-    const char* name = std::strrchr(path, '\\');
-    name = name != nullptr ? name + 1 : path;
+    if (g_hostPath[0] == '\0') return false;
+    const char* name = std::strrchr(g_hostPath, '\\');
+    name = name != nullptr ? name + 1 : g_hostPath;
     return _stricmp(name, ac2::kHostExecutable) == 0;
 }
 
@@ -276,16 +291,40 @@ bool InspectImage(char* failure, std::size_t failureSize) {
         std::snprintf(failure, failureSize, "not an x86 PE image");
         return false;
     }
-    if (nt.OptionalHeader.SizeOfImage != ac2::kSizeOfImage) {
-        std::snprintf(failure, failureSize, "image size %08lX, expected %08X",
-                      nt.OptionalHeader.SizeOfImage, static_cast<unsigned>(ac2::kSizeOfImage));
+    if (nt.OptionalHeader.SizeOfImage < ac2::kMinSizeOfImage) {
+        std::snprintf(failure, failureSize, "image size %08lX, at least %08X expected",
+                      nt.OptionalHeader.SizeOfImage, static_cast<unsigned>(ac2::kMinSizeOfImage));
         return false;
     }
+    const char* layout = "unknown layout, signatures decide";
+    if (nt.FileHeader.TimeDateStamp == ac2::kTimeDateStamp) {
+        if (nt.OptionalHeader.SizeOfImage == ac2::kMinSizeOfImage) layout = "Ubisoft Connect build";
+        if (nt.OptionalHeader.SizeOfImage == ac2::kSteamSizeOfImage) layout = "Steam build (Steam DRM wrapper)";
+    }
     Log("executable: timestamp=%08lX image_size=%08lX (%s)", nt.FileHeader.TimeDateStamp,
-        nt.OptionalHeader.SizeOfImage,
-        nt.FileHeader.TimeDateStamp == ac2::kTimeDateStamp ? "known Ubisoft Connect build"
-                                                           : "unknown timestamp, signatures decide");
+        nt.OptionalHeader.SizeOfImage, layout);
     return true;
+}
+
+// Steam's DRM wrapper decrypts the game code after the process starts, possibly after the
+// loader has loaded this plugin. Until then the signatures cannot match, so they are checked
+// again until they do or the time runs out.
+bool WaitForValidLayout(char* failure, std::size_t failureSize) {
+    auto reader = [](std::uint32_t va, void* destination, std::size_t length) {
+        return ReadOwnMemory(va, destination, length);
+    };
+    if (ac2::ValidateLayout(reader, failure, failureSize)) return true;
+    Log("game code not ready (%s); checking again for up to %lu s (Steam's DRM decrypts it at startup)",
+        failure, kCodeReadyTimeoutMs / 1000);
+    const DWORD started = GetTickCount();
+    while (GetTickCount() - started < kCodeReadyTimeoutMs) {
+        Sleep(kCodeReadyPollMs);
+        if (ac2::ValidateLayout(reader, failure, failureSize)) {
+            Log("game code ready after %lu ms", GetTickCount() - started);
+            return true;
+        }
+    }
+    return false;
 }
 
 bool HashFileSha256(const char* path, char (&hex)[65]) {
@@ -326,10 +365,16 @@ bool HashFileSha256(const char* path, char (&hex)[65]) {
     return true;
 }
 
+void LogBuildIdentity();
+
+DWORD WINAPI LogBuildIdentityThread(LPVOID) {
+    LogBuildIdentity();
+    return 0;
+}
+
 void LogBuildIdentity() {
-    char path[MAX_PATH]{};
     char hex[65]{};
-    if (GetModuleFileNameA(nullptr, path, MAX_PATH) == 0 || !HashFileSha256(path, hex)) {
+    if (g_hostPath[0] == '\0' || !HashFileSha256(g_hostPath, hex)) {
         Log("executable SHA-256: unavailable");
         return;
     }
@@ -979,11 +1024,7 @@ DWORD WINAPI Initialize(LPVOID) {
     if (!AcquireInstanceGuard()) return 1;
 
     char failure[256]{};
-    auto reader = [](std::uint32_t va, void* destination, std::size_t length) {
-        return ReadOwnMemory(va, destination, length);
-    };
-    if (!InspectImage(failure, sizeof(failure)) ||
-        !ac2::ValidateLayout(reader, failure, sizeof(failure))) {
+    if (!InspectImage(failure, sizeof(failure)) || !WaitForValidLayout(failure, sizeof(failure))) {
         Log("Executable layout does not match the supported layout: %s; the fix stays inactive",
             failure);
         return 1;
@@ -992,7 +1033,6 @@ DWORD WINAPI Initialize(LPVOID) {
         static_cast<unsigned>(sizeof(ac2::kCodeSignatures) / sizeof(ac2::kCodeSignatures[0])),
         static_cast<unsigned>(sizeof(ac2::kDataSignatures) / sizeof(ac2::kDataSignatures[0])),
         static_cast<unsigned>(sizeof(ac2::kValueChecks) / sizeof(ac2::kValueChecks[0])));
-    LogBuildIdentity();
     LoadConfig();
     if (!g_enabled) {
         Log("disabled by configuration (Enabled=0); the game runs unmodified");
@@ -1008,6 +1048,11 @@ DWORD WINAPI Initialize(LPVOID) {
     }
     Log("initialized: linear mouse camera %s; F8 toggles it, F9/F10 multiplier -/+ 10%%, F6 reloads the ini",
         InterlockedCompareExchange(&g_linearCamera, 0, 0) != 0 ? "ON" : "OFF (game's own curve)");
+    // Hashing loads a system DLL, which waits for the loader lock; the game's DRM start-up can
+    // hold that lock for a long time. The hash only names the build in the log, so it runs on
+    // its own thread after the hooks are in place.
+    HANDLE identity = CreateThread(nullptr, 0, LogBuildIdentityThread, nullptr, 0, nullptr);
+    if (identity != nullptr) CloseHandle(identity);
 #if AC2_DEV_TOOLS
     const bool tracing = g_traceStickReaders && StartTrace();
 #endif
@@ -1041,6 +1086,7 @@ DWORD WINAPI Initialize(LPVOID) {
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_self = instance;
+        CaptureModulePaths(instance);
         DisableThreadLibraryCalls(instance);
         HANDLE thread = CreateThread(nullptr, 0, Initialize, nullptr, 0, nullptr);
         if (thread != nullptr) CloseHandle(thread);
